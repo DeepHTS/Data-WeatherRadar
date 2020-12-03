@@ -1,0 +1,19 @@
+version: '3.5'
+services:
+  data-weather-radar:
+    container_name: data-weather-radar_master
+    build: .
+    image: data-weather-radar:latest
+#    runtime: nvidia
+#    environment:
+#      - NVIDIA_VISIBLE_DEVICES=all
+#      - ./web.env
+#    command: nvidia-smi
+    tty: true
+    command: /bin/bash
+    volumes:
+      - .:/src
+    env_file:
+      - ./web.env
+    ports:
+      - "8008:8008"
