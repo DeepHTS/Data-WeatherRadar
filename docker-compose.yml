@@ -12,7 +12,7 @@ services:
     tty: true
     command: /bin/bash
     volumes:
-      - .:/data_weather_radar
+      - .:/src
     env_file:
       - ./web.env
     ports:
