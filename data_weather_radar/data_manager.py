@@ -104,11 +104,3 @@ class WeatherRadarDataManager(object):
                          for url_src in urls_src]
             urls_src = imap_unordered_bar(argwrapper, func_args, processes, extend=True)
         return urls_src
-
-
-if __name__ == '__main__':
-    dir_src_s3 = 'data/JMA/RA/RA2015/DATA/2019'
-    weather_radar_data_manager = WeatherRadarDataManager()
-    urls_dst_s3 = weather_radar_data_manager.convert_glib2_s3_directory(dir_src_s3=dir_src_s3, ext_filter='.bin',
-                                                                        remove_local_file=True,
-                                                                        processes=14)
