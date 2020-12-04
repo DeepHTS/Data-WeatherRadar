@@ -21,7 +21,7 @@ class WeatherRadarDataManager(object):
         self.dir_parent_local = dir_parent_local
         self.dir_parent_s3 = dir_parent_s3
 
-        self.dir_parent_raw_local = os.path.join(self.dir_parent_local, 'raw')
+        self.dir_parent_raw_local = os.path.join(self.dir_parent_local, 'raw_')
         self.dir_parent_converted_local = os.path.join(self.dir_parent_local, 'converted')
 
     def convert_glib2_s3(self, url_src: str, epsg_dst: int = 4326, overwrite: bool = True, remove_local_file: bool = False,
@@ -44,7 +44,7 @@ class WeatherRadarDataManager(object):
         url_head = get_s3_url_head(multiprocessing=multiprocessing)
         assert url_src.startswith(url_head) and self.dir_parent_s3 in url_src
         dir_dst_local = os.path.join(self.dir_parent_raw_local,
-                                     url_src[len(url_head) + 1 + len(self.dir_parent_s3) + 1:])
+                                     os.path.dirname(url_src[len(url_head) + 1 + len(self.dir_parent_s3) + 1:]))
         # download
         path_local = download_from_http(url_src=url_src, dir_dst=dir_dst_local, filename=None, overwrite=overwrite)
 
