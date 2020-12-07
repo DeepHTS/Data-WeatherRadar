@@ -52,6 +52,7 @@ RUN chmod -R a+w .
 
 RUN jupyter notebook --generate-config
 
+ENV CURL_CA_BUNDLE /etc/ssl/certs/ca-certificates.crt
 
 
 WORKDIR /src

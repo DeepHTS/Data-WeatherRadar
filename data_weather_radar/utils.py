@@ -1,6 +1,6 @@
 from tqdm import tqdm
 from multiprocessing import Pool
-from typing import Optional, List, Union
+from typing import Optional, List, Tuple, Union, Callable, Dict
 import os
 import requests
 
@@ -161,11 +161,37 @@ def copy_to_s3(path_src_local: str, path_dst_s3: str, remove_local_file: bool = 
     return os.path.join(url_s3_head, path_dst_s3)
 
 
-def get_all_file_path_s3(dir_parent: str, ext_filter: Optional[Union[str, List[str]]] = None) -> List[str]:
+# def get_all_file_path_s3(dir_parent: str, ext_filter: Optional[Union[str, List[str]]] = None) -> List[str]:
+#     """ Get all of files' paths under specified directory on S3
+#     Args:
+#         dir_parent (str): parent directory for searching paths
+#         ext_filter (list): list of string for selecting files which are matched from end of the filenames. If None, all of the files are returned
+#     Returns:
+#         (str) list of paths
+#     """
+#     s3_resource = boto3.resource('s3')
+#     my_bucket = s3_resource.Bucket(S3_BUCKET_NAME)
+#     objects = my_bucket.objects.filter(Prefix=dir_parent)
+#     url_head = get_s3_url_head()
+#     if ext_filter is None:
+#         path_out = [os.path.join(url_head, obj.key) for obj in objects]
+#     else:
+#         if type(ext_filter) != list:
+#             ext_filter = list(ext_filter)
+#
+#         path_out = [os.path.join(url_head, obj.key) for ext_elem in ext_filter for obj in objects if
+#                     obj.key.endswith(ext_elem)]
+#     return path_out
+
+def get_all_file_path_s3(dir_parent: str, ext_filter: Optional[Union[str, List[str]]] = None,
+                         func_kwargs: Optional[Union[Callable, Tuple[Callable, Dict]]] = None
+                         ) -> List[str]:
     """ Get all of files' paths under specified directory on S3
     Args:
         dir_parent (str): parent directory for searching paths
         ext_filter (list): list of string for selecting files which are matched from end of the filenames. If None, all of the files are returned
+        func_kwargs (Optional[Union[Callable, Tuple[Callable, Dict]]]):
+            function of filtering, with args in dictionary
     Returns:
         (str) list of paths
     """
@@ -177,10 +203,22 @@ def get_all_file_path_s3(dir_parent: str, ext_filter: Optional[Union[str, List[s
         path_out = [os.path.join(url_head, obj.key) for obj in objects]
     else:
         if type(ext_filter) != list:
-            ext_filter = list(ext_filter)
+            ext_filter = [ext_filter]
 
-        path_out = [os.path.join(url_head, obj.key) for ext_elem in ext_filter for obj in objects if
-                    obj.key.endswith(ext_elem)]
+        path_out = []
+        for obj in objects:
+            if func_kwargs is not None:
+                if type(func_kwargs) == tuple and (not func_kwargs[0](obj.key, **func_kwargs[1])):
+                    continue
+                elif type(func_kwargs) != tuple and not func_kwargs(obj.key):
+                    continue
+
+            for ext_elem in ext_filter:
+                if obj.key.endswith(ext_elem):
+                    path_out.append(os.path.join(url_head, obj.key))
+
+        # path_out = [os.path.join(url_head, obj.key) for ext_elem in ext_filter for obj in objects if
+        #             obj.key.endswith(ext_elem)]
     return path_out
 
 
