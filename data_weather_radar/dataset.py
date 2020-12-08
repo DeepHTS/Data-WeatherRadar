@@ -215,6 +215,10 @@ class DatasetMaker(object):
 
         path_out = os.path.join(self.dir_parent_dst_local, self.subdir_dst, filename)
 
+        dir_out = os.path.join(self.dir_parent_dst_local, self.subdir_dst)
+        if not os.path.exists(dir_out):
+            os.makedirs(dir_out)
+
         if overwrite or not check_file_existence_local(path_out):
             get_cropped_gtiff(path_img=path_img,
                               path_out=path_out,
