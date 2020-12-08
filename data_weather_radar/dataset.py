@@ -1,10 +1,11 @@
 import os
 import datetime
 import pytz
-from typing import List, Optional, Tuple, Union, Callable, Dict
+from typing import List, Optional, Tuple, Dict
 import numpy as np
 from pathlib import Path
 from tqdm import tqdm
+import json
 
 import rasterio
 from rasterio.windows import Window, transform
@@ -12,16 +13,6 @@ import pandas as pd
 
 from data_weather_radar.utils import get_all_file_path_s3, copy_to_s3, check_file_existence_local, argwrapper, \
     imap_unordered_bar
-
-
-# from data_weather_radar.utils import get_all_file_path_s3
-
-
-# get array
-# get convert to small geotiff
-# todo: prepare image base list [path, original image path, date, lat, lon, size]
-#   convert, list.append(info..), upload,   after upload list
-# todo: make list with train and eval with the above list
 
 
 def get_array(path_img: str, lon: float, lat: float, size: Tuple[int, int] = (256, 256), pos: str = 'center',
@@ -53,13 +44,6 @@ def get_array(path_img: str, lon: float, lat: float, size: Tuple[int, int] = (25
         clip = src.read(window=window)
 
     return clip, out_profile, window
-
-    # print(clip.shape)
-    # out_profile = src.profile.copy()
-    #
-    # with rasterio.open('temp/test.tif', 'w', **out_profile) as dst:
-    #     dst.write(clip, window=window)
-    # dst.close()
 
 
 def get_cropped_gtiff(path_img: str, path_out: str, lon: float, lat: float, array_size: Tuple[int, int] = (256, 256),
@@ -110,61 +94,52 @@ def get_cropped_gtiff(path_img: str, path_out: str, lon: float, lat: float, arra
     return
 
 
-def get_datetime(path_img):
+def get_datetime(path_img: str) -> datetime.datetime:
+    """ Get datetime of given file
+
+    Args:
+        path_img (str): target file path
+
+    Returns:
+        (datetime.datetime): Acquired date of the target file
+
+    """
+
     filename = os.path.basename(path_img)
     datetime_str = filename.split('_')[4]
     return datetime.datetime.strptime(datetime_str, '%Y%m%d%H%M%S%f').replace(tzinfo=pytz.utc)
 
 
-def check_filename_in_time_range(path_img, datetime_start, datetime_end):
+def check_filename_in_time_range(path_img: str, datetime_start: datetime.datetime,
+                                 datetime_end: datetime.datetime) -> bool:
+    """ Check the given file's acquired datetime is between time range
+
+    Args:
+        path_img (str): target file path
+        datetime_start (datetime.datetime): start time of time range
+        datetime_end (datetime.datetime): start time of time range
+
+    Returns:
+        (bool): If True, the acquired time is in time range
+
+    """
     datetime_target = get_datetime(path_img)
     return (datetime_start <= datetime_target) and (datetime_target <= datetime_end)
 
 
-# # todo: this should be moved to utils in the future
-# import boto3
-# from data_weather_radar.utils import get_s3_url_head
-#
-# S3_BUCKET_NAME = os.getenv('AWS_S3_BUCKET_NAME')
-# def get_all_file_path_s3(dir_parent: str, ext_filter: Optional[Union[str, List[str]]] = None,
-#                          func_kwargs: Optional[Union[Callable, Tuple[Callable, Dict]]] = None
-#                          ) -> List[str]:
-#     """ Get all of files' paths under specified directory on S3
-#     Args:
-#         dir_parent (str): parent directory for searching paths
-#         ext_filter (list): list of string for selecting files which are matched from end of the filenames. If None, all of the files are returned
-#     Returns:
-#         (str) list of paths
-#     """
-#     s3_resource = boto3.resource('s3')
-#     my_bucket = s3_resource.Bucket(S3_BUCKET_NAME)
-#     objects = my_bucket.objects.filter(Prefix=dir_parent)
-#     url_head = get_s3_url_head()
-#     if ext_filter is None:
-#         path_out = [os.path.join(url_head, obj.key) for obj in objects]
-#     else:
-#         if type(ext_filter) != list:
-#             ext_filter = list(ext_filter)
-#
-#         path_out = []
-#         for obj in objects:
-#             if func_kwargs is not None:
-#                 if type(func_kwargs) == tuple and (not func_kwargs[0](obj.key, **func_kwargs[1])):
-#                     continue
-#                 elif type(func_kwargs) != tuple and not func_kwargs(obj.key):
-#                     continue
-#
-#             for ext_elem in ext_filter:
-#                 if obj.key.endswith(ext_elem):
-#                     path_out.append(os.path.join(url_head, obj.key))
-#
-#         # path_out = [os.path.join(url_head, obj.key) for ext_elem in ext_filter for obj in objects if
-#         #             obj.key.endswith(ext_elem)]
-#     return path_out
-
-
 class DatasetMaker(object):
-    def __init__(self, dir_parent_src, dir_parent_dst_local, dir_parent_dst_s3, subdir_dst, src_is_s3: bool = True):
+    def __init__(self, dir_parent_src: str, dir_parent_dst_local: str, dir_parent_dst_s3: str, subdir_dst: str,
+                 src_is_s3: bool = True):
+        """ Make dataset for PyTorch pipeline from multiple files on S3
+
+        Args:
+            dir_parent_src (str): local or http of parent directory of target files
+            dir_parent_dst_local (str): destination directory for output files on local
+            dir_parent_dst_s3 (str): destination directory for output files on S3
+            subdir_dst (str): name of sub directory under the parent directory
+            src_is_s3 (bool): If True, dir_parent_src is in s3
+        """
+
         self.dir_parent_src = dir_parent_src
         self.dir_parent_dst_local = dir_parent_dst_local
         self.dir_parent_dst_s3 = dir_parent_dst_s3
@@ -175,6 +150,13 @@ class DatasetMaker(object):
         self.cropped_name = 'cropped'
         self.list_dict_local = []
         self.list_dict_s3 = []
+
+        self.key_local = 'path_image'
+        self.key_s3 = 'url_s3'
+        self.col_path = 'path_image'
+
+        self.file_list_name = 'file_list.csv'
+        self.parameter_list = 'parameters.json'
 
     def _get_candidate_files_path(self, datetime_start: datetime.datetime, datetime_end: datetime.datetime) -> List[
         str]:
@@ -205,10 +187,28 @@ class DatasetMaker(object):
 
         return files_path
 
-    def get_cropped_tiff(self, path_img: str, lon: float, lat: float,
-                         array_size: Tuple[int, int] = (256, 256), pos: str = 'center', band: Optional[int] = 1,
-                         overwrite: bool = True,
-                         s3_upload: bool = True, remove_local_file: bool = False, multiprocessing: bool = False):
+    def get_cropped_tiff_upload(self, path_img: str, lon: float, lat: float,
+                                array_size: Tuple[int, int] = (256, 256), pos: str = 'center', band: Optional[int] = 1,
+                                overwrite: bool = True, s3_upload: bool = True, remove_local_file: bool = False,
+                                multiprocessing: bool = False) -> Dict:
+        """ Get cropped geotiff image from geotiff image
+
+        Args:
+            path_img (str): local path or url of target geotiff file
+            lon (float): longitude
+            lat (float): latitude
+            array_size (Tuple[int, int]): numpy array size
+            pos (str): If 'center', lon and lat are center position in acquired square
+            band (Optional[int]): If None, all band.
+            overwrite (bool): If True, avoid downloading the file with the same name and not empty
+            s3_upload (bool): If True, the local file is uploaded to S3
+            remove_local_file (bool): If True, the local file will be removed after uploading to S3
+            multiprocessing (bool): If True, this def can be in the part of multiprocessing
+
+        Returns:
+            (Dict): file path info
+
+        """
 
         filename = os.path.basename(path_img)
         filename = os.path.splitext(filename)[0] + '_' + self.cropped_name + os.path.splitext(filename)[1]
@@ -224,10 +224,19 @@ class DatasetMaker(object):
             path_dst_s3 = os.path.join(self.dir_parent_dst_s3, self.subdir_dst, filename)
             url_out = copy_to_s3(path_src_local=path_out, path_dst_s3=path_dst_s3, remove_local_file=remove_local_file,
                                  overwrite=overwrite, multiprocessing=multiprocessing)
+            if remove_local_file:
+                path_out = None
         else:
             url_out = None
 
-        return path_out, url_out
+        dict_path_info = {
+            self.key_local: path_out,
+            'url_s3_origin': path_img,
+            self.key_s3: url_out,
+            'datetime': get_datetime(path_img),
+            'file_name': filename
+        }
+        return dict_path_info
 
     def _get_list_of_files(self, files_path_database, files_path_origin, support_info):
         if len(files_path_database) == 0:
@@ -248,41 +257,41 @@ class DatasetMaker(object):
             list_info.append(dict_info)
         return list_info
 
+    def _get_organized_df(self, list_dict):
+        df_temp = pd.DataFrame(list_dict)
+        col_base = list(df_temp.columns)
+        col_base.remove(self.key_local)
+        col_base.remove(self.key_s3)
+        df_base = df_temp.loc[:, col_base]
+        return df_base
+
     def prepare_dataset(self, datetime_start: datetime.datetime, datetime_end: datetime.datetime,
                         lon: float, lat: float,
                         array_size: Tuple[int, int] = (256, 256), pos: str = 'center', band: Optional[int] = 1,
                         overwrite: bool = True,
                         s3_upload: bool = True, remove_local_file: bool = False, processes: int = 1
-                        ):
-        # todo: subdir to self.subdir
-        files_path = self._get_candidate_files_path(datetime_start=datetime_start, datetime_end=datetime_end)
-        print(files_path)
-        if processes == 1:
-            list_path = []
-            list_url = []
-            for file_path in tqdm(files_path, total=len(files_path)):
-                path_out, url_out = self.get_cropped_tiff(path_img=file_path,
-                                                          lon=lon, lat=lat,
-                                                          array_size=array_size,
-                                                          pos=pos,
-                                                          band=band,
-                                                          overwrite=overwrite,
-                                                          s3_upload=s3_upload,
-                                                          remove_local_file=remove_local_file,
-                                                          multiprocessing=False)
-                list_path.append(path_out)
-                if url_out is not None:
-                    list_url.append(url_out)
-        else:
-            func_args = [(self.get_cropped_tiff, files_path, lon, lat, array_size, pos, band, overwrite,
-                          s3_upload, remove_local_file, True) for files_path in files_path]
-            list_path_url = imap_unordered_bar(argwrapper, func_args, processes, extend=False)
-            df = pd.DataFrame(list_path_url)
-            list_path = df[0].to_list()
-            list_url = df[1].to_list()
-            list_url = [url for url in list_url if url is not None]
+                        ) -> Tuple[pd.DataFrame, Dict]:
+        """ Prepare dataset with cropping images
 
-        dict_meta = {
+        Args:
+            datetime_start (datetime.datetime): start time of time range
+            datetime_end (datetime.datetime): end time of time range
+            lon (float): longitude
+            lat (float): latitude
+            array_size (Tuple[int, int]): numpy array size
+            pos (str): If 'center', lon and lat are center position in acquired square
+            band (Optional[int]): If None, all band.
+            overwrite (bool): If True, avoid downloading the file with the same name and not empty
+            s3_upload (bool): If True, the local file is uploaded to S3
+            remove_local_file (bool): If True, the local file will be removed after uploading to S3
+            processes (int): the number of threads for multiprocessing
+
+        Returns:
+            (Tuple[pd.DataFrame, Dict]): file info in df, and parameters in json
+
+        """
+
+        dict_parameters = {
             'longitude': lon,
             'latitude': lat,
             'position': pos,
@@ -290,66 +299,52 @@ class DatasetMaker(object):
             'band': band
         }
 
-        list_path_info = self._get_list_of_files(files_path_database=list_path,
-                                                 files_path_origin=files_path,
-                                                 support_info=dict_meta
-                                                 )
-        if len(list_path_info) > 0:
-            self.list_dict_local.append(list_path_info)
+        files_path = self._get_candidate_files_path(datetime_start=datetime_start, datetime_end=datetime_end)
+        print(files_path)
+        if processes == 1:
+            list_dict_path_info = []
+            for file_path in tqdm(files_path, total=len(files_path)):
+                dict_path_info = self.get_cropped_tiff_upload(path_img=file_path,
+                                                              lon=lon, lat=lat,
+                                                              array_size=array_size,
+                                                              pos=pos,
+                                                              band=band,
+                                                              overwrite=overwrite,
+                                                              s3_upload=s3_upload,
+                                                              remove_local_file=remove_local_file,
+                                                              multiprocessing=False)
 
-        list_url_info = self._get_list_of_files(files_path_database=list_url,
-                                                files_path_origin=files_path,
-                                                support_info=dict_meta
-                                                )
-        if len(list_url_info) > 0:
-            self.list_dict_s3.append(list_url_info)
+                list_dict_path_info.append(dict_path_info)
 
-        return list_path, list_url
+        else:
+            func_args = [(self.get_cropped_tiff_upload, files_path, lon, lat, array_size, pos, band, overwrite,
+                          s3_upload, remove_local_file, True) for files_path in files_path]
+            list_dict_path_info = imap_unordered_bar(argwrapper, func_args, processes, extend=False)
 
-    # todo: def save dict or df
+        df_file_list = self._get_organized_df(list_dict_path_info)
 
-    #
-    # def xxx(self, date, upload s3:):
-    #     pass
-    #
-    # def xxx(self, dateset_start, dateset_end, windos, processes):
-    #     pass
+        # save dataframe
+        path_out = os.path.join(self.dir_parent_dst_local, self.subdir_dst, self.file_list_name)
+        df_file_list.to_csv(path_out, index=False)
+        if s3_upload:
+            path_out_s3 = os.path.join(self.dir_parent_dst_s3, self.subdir_dst, self.file_list_name)
+            copy_to_s3(path_src_local=path_out, path_dst_s3=path_out_s3, remove_local_file=remove_local_file,
+                       overwrite=overwrite, multiprocessing=False)
 
+        # save parameter
+        path_out = os.path.join(self.dir_parent_dst_local, self.subdir_dst, self.parameter_list)
+        with open(path_out, mode='w') as file:
+            json.dump(dict_parameters, file)
 
-# make tifff (geotiff) in local with list of filepath
-# https://github.com/HansBambel/SmaAt-UNet/blob/master/utils/dataset_precip.py
+        if s3_upload:
+            path_out_s3 = os.path.join(self.dir_parent_dst_s3, self.subdir_dst, self.parameter_list)
+            copy_to_s3(path_src_local=path_out, path_dst_s3=path_out_s3, remove_local_file=remove_local_file,
+                       overwrite=overwrite, multiprocessing=False)
+
+        return df_file_list, dict_parameters
 
 
 if __name__ == '__main__':
-    dict_meta = {
-        'longitude': 1,
-        'latitude': 2,
-        'position': 3,
-        'array_size': 4,
-        'band': 5
-    }
-
-    # dir_parent_src = 'data/JMA/RA/converted/RA2016'
-    # kwargs = {
-    #     'datetime_start': datetime.datetime(year=2016, month=1, day=1, tzinfo=pytz.utc),
-    #     'datetime_end': datetime.datetime(year=2016, month=1, day=3, tzinfo=pytz.utc),
-    # }
-    #
-    # path_out =get_all_file_path_s3(dir_parent=dir_parent_src, ext_filter='_grib2_reproj-4326.tif',
-    #                      func_kwargs=(check_filename_in_time_range, kwargs))
-    # print(path_out)
-
-    # def get_all_file_path_s3(dir_parent: str, ext_filter: Optional[Union[str, List[str]]] = None,
-    #                          func_kwargs: Optional[Union[Callable, Tuple[Callable, Dict]]] = None
-    #                          ) -> List[str]:
-    #
-    #
-    #
-    # path = 'temp/conv/Z__C_RJTD_20190101000000_SRF_GPV_Ggis1km_Prr60lv_ANAL_grib2_reproj-4326.tif'
-    # lon = 127.8
-    # lat = 26.3
-    # get_array(path_img=path, lon=lon, lat=lat, size=(256, 256))
-    #
     dir_parent_src = 'data/JMA/RA/converted/RA2015'
     path_local = 'temp/conv/Z__C_RJTD_20190101000000_SRF_GPV_Ggis1km_Prr60lv_ANAL_grib2_reproj-4326.tif'
     lon = 127.8
@@ -357,33 +352,21 @@ if __name__ == '__main__':
     size = (256, 256)
 
     datetime_start = datetime.datetime(year=2015, month=8, day=1, hour=0, minute=0, tzinfo=pytz.utc)
-    datetime_end = datetime.datetime(year=2015, month=8, day=1, hour=7, minute=59, tzinfo=pytz.utc)
+    datetime_end = datetime.datetime(year=2015, month=8, day=1, hour=2, minute=59, tzinfo=pytz.utc)
     dir_parent_dst_local = 'dataset'
     dir_parent_dst_s3 = 'check_data/RA_dataset'
     src_s3 = True
 
     dataset_maker = DatasetMaker(dir_parent_src=dir_parent_src, dir_parent_dst_local=dir_parent_dst_local,
-                                 dir_parent_dst_s3=dir_parent_dst_s3, src_s3=src_s3)
-    # dataset_maker.get_cropped_tiff(path_img=path_local,
-    #                                subdir_dst='temp',
-    #                                lon=lon, lat=lat,
-    #                                array_size=size,
-    #                                pos='center',
-    #                                band=1,
-    #                                overwrite=True,
-    #                                s3_upload=True,
-    #                                remove_local_file=False,
-    #                                multiprocessing=False
-    #                                )
-    list_path, list_url = dataset_maker.prepare_dataset(datetime_start=datetime_start,
-                                                        datetime_end=datetime_end,
-                                                        subdir_dst='temp',
-                                                        lon=lon, lat=lat,
-                                                        array_size=size,
-                                                        pos='center',
-                                                        band=1,
-                                                        overwrite=True,
-                                                        s3_upload=True,  # s3_upload=True
-                                                        remove_local_file=False,
-                                                        processes=10)
-    print(list_path, list_url)
+                                 dir_parent_dst_s3=dir_parent_dst_s3, subdir_dst='temp', src_is_s3=src_s3)
+    df_file_list, dict_parameters = dataset_maker.prepare_dataset(datetime_start=datetime_start,
+                                                                  datetime_end=datetime_end,
+                                                                  lon=lon, lat=lat,
+                                                                  array_size=size,
+                                                                  pos='center',
+                                                                  band=1,
+                                                                  overwrite=True,
+                                                                  s3_upload=False,  # s3_upload=True
+                                                                  remove_local_file=False,
+                                                                  processes=6)
+    print(df_file_list, dict_parameters)
